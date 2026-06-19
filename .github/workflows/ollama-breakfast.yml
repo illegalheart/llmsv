@@ -1,0 +1,86 @@
+name: Ollama Gemma breakfast test
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Ollama model tag
+        required: true
+        default: gemma4:e2b
+        type: string
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ask-gemma:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MODEL: ${{ inputs.model || 'gemma4:e2b' }}
+      OLLAMA_CONTEXT_LENGTH: 1024
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_KEEP_ALIVE: 0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner resources
+        run: |
+          free -h
+          df -h /
+          docker version
+
+      - name: Prepare disk and swap for the 7.2 GB model
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo swapoff /mnt/swapfile 2>/dev/null || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 6G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          df -h /
+
+      - name: Build Linux Ollama container
+        run: docker build --tag ollama-breakfast:test .
+
+      - name: Ask Gemma for an egg breakfast
+        run: |
+          mkdir -p results
+          docker run --rm \
+            --env MODEL="$MODEL" \
+            --env OLLAMA_CONTEXT_LENGTH="$OLLAMA_CONTEXT_LENGTH" \
+            --env OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL" \
+            --env OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
+            --volume "$PWD/results:/results" \
+            ollama-breakfast:test
+
+      - name: Display answer in Actions log and summary
+        if: always()
+        run: |
+          if [[ -f results/answer.txt ]]; then
+            echo '===== Gemma の回答 ====='
+            cat results/answer.txt
+            {
+              echo '## Gemma の回答'
+              echo
+              cat results/answer.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '回答ファイルが作成されませんでした。'
+            exit 1
+          fi
+
+      - name: Upload answer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemma-breakfast-answer
+          path: results/
+          if-no-files-found: warn
+          retention-days: 7
