@@ -1,0 +1,83 @@
+name: Generate AI consulting website with Gemma
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/generate-ai-consulting-site
+
+permissions:
+  contents: read
+
+jobs:
+  generate-site:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MODEL: gemma4:e2b
+      OLLAMA_CONTEXT_LENGTH: 8192
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_KEEP_ALIVE: 0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare disk and swap
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo swapoff /mnt/swapfile 2>/dev/null || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 6G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          df -h /
+
+      - name: Build website generator container
+        run: docker build --tag gemma-site-generator:test site-generator
+
+      - name: Generate website with Gemma
+        run: |
+          mkdir -p generated-site
+          docker run --rm \
+            --env MODEL="$MODEL" \
+            --env OLLAMA_CONTEXT_LENGTH="$OLLAMA_CONTEXT_LENGTH" \
+            --env OLLAMA_NUM_PARALLEL="$OLLAMA_NUM_PARALLEL" \
+            --env OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE" \
+            --volume "$PWD/generated-site:/output" \
+            gemma-site-generator:test
+
+      - name: Validate generated website
+        run: |
+          test -s generated-site/index.html
+          grep -Eiq '<!doctype html>|<html' generated-site/index.html
+          grep -Eiq '</html>' generated-site/index.html
+          grep -Eiq '<style' generated-site/index.html
+          grep -Eiq '生成AI|AI' generated-site/index.html
+          if grep -Eq '^```|```$' generated-site/index.html; then
+            echo 'Markdown code fence was found in index.html.' >&2
+            exit 1
+          fi
+          echo 'Generated index.html passed validation.'
+
+      - name: Add result to job summary
+        run: |
+          {
+            echo '## Gemma-generated website'
+            echo
+            echo '- Model: `gemma4:e2b`'
+            echo '- File: `index.html`'
+            echo '- Validation: passed'
+            echo
+            cat generated-site/design-summary.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload website artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemma4-e2b-ai-consulting-website
+          path: generated-site/
+          if-no-files-found: error
+          retention-days: 7
